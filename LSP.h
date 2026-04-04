@@ -23,8 +23,8 @@
     	JsonValue* message = some_message_creating_function(0, "id_name");
     	tiny_queue_push(ctx->sender_queue, message);
 		
-		// responses are recieved by poping from reciever_queue
-    	JsonValue *response = lsp_wait_for(ctx->reciever_queue, 0, "id_name");
+		// responses are recieved by poping from receiver_queue
+    	JsonValue *response = lsp_wait_for(ctx->receiver_queue, 0, "id_name");
     	if (response) {
     	    // handle response
     	    json_free(response);
@@ -51,14 +51,20 @@
 	#include "tiny_queue.h"
 #endif
 
+typedef enum {
+    LSPKIND_NONE = 0,
+    LSPKIND_CLANGD
+} LSPKind;
+
 typedef struct {
     pthread_t sender_thread;
     tiny_queue_t* sender_queue;
     pthread_t reciever_thread;
-    tiny_queue_t* reciever_queue;
+    tiny_queue_t* receiver_queue;
     JsonValue* capabilities;
 
     int* write_read_fds;
+    LSPKind lsp_kind;
 } LSPContext;
 
 
@@ -68,9 +74,25 @@ typedef struct {
 
 */
 
-#ifndef LSP_WAIT_FOR_TIMEOUT_MS
-	#define LSP_WAIT_FOR_TIMEOUT_MS 100 
+#ifndef LSP_WAIT_FOR_TIMEOUT_US
+	#define LSP_WAIT_FOR_TIMEOUT_US 10
 #endif
+
+char* get_file_uri(const char* full_path){
+    char* uri = NULL;
+    arrput(uri, 'f');
+    arrput(uri, 'i');
+    arrput(uri, 'l');
+    arrput(uri, 'e');
+    arrput(uri, ':');
+    arrput(uri, '/');
+    arrput(uri, '/');
+    for(size_t i = 0; i < strlen(full_path); i++){
+        arrput(uri, full_path[i]);
+    }
+    arrput(uri, '\0');
+    return uri;
+}
 
 JsonValue* lsp_wait_for(tiny_queue_t* queue, int id, const char* str_id){
     while(1){
@@ -97,7 +119,7 @@ JsonValue* lsp_wait_for(tiny_queue_t* queue, int id, const char* str_id){
         else{
             tiny_queue_push(queue, response);
         }
-        usleep(LSP_WAIT_FOR_TIMEOUT_MS);
+        usleep(LSP_WAIT_FOR_TIMEOUT_US);
     }
 }
 
@@ -139,6 +161,33 @@ JsonValue* make_didOpen_notification(JsonValue* params){
     return message;
 }
 
+
+JsonValue* make_didChange_params(const char* document_uri, int version, const char* text){
+    JsonValue* params = json_new_object();
+    JsonValue* text_document = json_new_object();
+    JsonValue* content_changes = json_new_array();
+    JsonValue* change = json_new_object();
+    json_add_child(text_document, "uri", json_new_string(document_uri));
+    json_add_child(text_document, "version", json_new_number(version));
+
+    json_add_child(params, "textDocument", text_document);
+
+    json_add_child(change, "text", json_new_string(text));
+    json_add_child(content_changes, NULL, change);
+
+    json_add_child(params, "contentChanges", content_changes);
+    return params;
+}
+
+JsonValue* make_didChange_notification(JsonValue* params){
+    if(!params){
+        return NULL;
+    }
+    JsonValue* message = make_base_message();
+    json_add_child(message, "method", json_new_string("textDocument/didChange"));
+    json_add_child(message, "params", params);
+    return message;
+}
 
 void send_json_rpc_message(int fd, JsonValue *packet) {
     char *out = NULL;
@@ -205,7 +254,7 @@ static void* lsp_sender_thread_function(void *args) {
 
 static void* lsp_reciever_thread_function(void *args) {
     int fd = ((LSPContext*)args)->write_read_fds[1];
-    tiny_queue_t* queue = ((LSPContext*)args)->reciever_queue;
+    tiny_queue_t* queue = ((LSPContext*)args)->receiver_queue;
 
     while (running) {
         JsonValue *response = recieve_json_rpc_message(fd);
@@ -257,14 +306,14 @@ static void start_lsp_server(int *write_fd_out, int *read_fd_out) {
     if (read_fd_out)  *read_fd_out  = from_server[0];
 }
 
-static void shutdown_lsp_server(tiny_queue_t *sender_queue, tiny_queue_t *reciever_queue) {
+static void shutdown_lsp_server(tiny_queue_t *sender_queue, tiny_queue_t *receiver_queue) {
     JsonValue *shutdown_req = make_base_message();
     json_add_child(shutdown_req, "id",      json_new_string("shutdown"));
     json_add_child(shutdown_req, "method",  json_new_string("shutdown"));
     json_add_child(shutdown_req, "params",  json_new_object());
     tiny_queue_push(sender_queue, (void *)shutdown_req);
 
-    JsonValue *shutdown_resp = lsp_wait_for(reciever_queue, 0, "shutdown");
+    JsonValue *shutdown_resp = lsp_wait_for(receiver_queue, 0, "shutdown");
     if (shutdown_resp) {
         json_print(shutdown_resp, 4, 0);
         json_free(shutdown_resp);
@@ -285,7 +334,9 @@ LSPContext* start_lsp(){
     ctx->write_read_fds[0] = -1;
     ctx->write_read_fds[1] = -1;
 
+    // TODO: Add more lsps
     start_lsp_server(&(ctx->write_read_fds[0]), &(ctx->write_read_fds[1]));
+    ctx->lsp_kind = LSPKIND_CLANGD;
     if(ctx->write_read_fds[0] == -1 || ctx->write_read_fds[1] == -1){
         free(ctx->write_read_fds);
         free(ctx);
@@ -293,7 +344,7 @@ LSPContext* start_lsp(){
     }
 
     ctx->sender_queue = tiny_queue_create();
-    ctx->reciever_queue = tiny_queue_create();
+    ctx->receiver_queue = tiny_queue_create();
     ctx->capabilities = NULL;
 
     if (pthread_create(&ctx->sender_thread, NULL, lsp_sender_thread_function, ctx) != 0) {
@@ -307,13 +358,13 @@ LSPContext* start_lsp(){
     }
 
     tiny_queue_push(ctx->sender_queue, (void*)make_initialize_message(0, "initialize", NULL));
-    ctx->capabilities = lsp_wait_for(ctx->reciever_queue, 0, "initialize");
+    ctx->capabilities = lsp_wait_for(ctx->receiver_queue, 0, "initialize");
 
     return ctx;
 }
 
 void destroy_lsp(LSPContext* ctx){
-	shutdown_lsp_server(ctx->sender_queue, ctx->reciever_queue);
+	shutdown_lsp_server(ctx->sender_queue, ctx->receiver_queue);
 
     pthread_join(ctx->sender_thread, NULL);
     pthread_join(ctx->reciever_thread, NULL);
@@ -330,14 +381,14 @@ void destroy_lsp(LSPContext* ctx){
     }
     tiny_queue_destroy(ctx->sender_queue);
     while(1){
-        void* item = tiny_queue_pop_nowait(ctx->reciever_queue);
+        void* item = tiny_queue_pop_nowait(ctx->receiver_queue);
         if(!item){
             break;
         }
         json_print(item, 4, 0);
         json_free(item);
     }
-    tiny_queue_destroy(ctx->reciever_queue);
+    tiny_queue_destroy(ctx->receiver_queue);
 
     free(ctx->write_read_fds);
     json_free(ctx->capabilities);
