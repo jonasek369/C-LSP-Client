@@ -53,7 +53,8 @@
 
 typedef enum {
     LSPKIND_NONE = 0,
-    LSPKIND_CLANGD
+    LSPKIND_CLANGD,
+    LSPKIND_PYLSP
 } LSPKind;
 
 typedef struct {
@@ -161,7 +162,6 @@ JsonValue* make_didOpen_notification(JsonValue* params){
     return message;
 }
 
-
 JsonValue* make_didChange_params(const char* document_uri, int version, const char* text){
     JsonValue* params = json_new_object();
     JsonValue* text_document = json_new_object();
@@ -187,6 +187,36 @@ JsonValue* make_didChange_notification(JsonValue* params){
     json_add_child(message, "method", json_new_string("textDocument/didChange"));
     json_add_child(message, "params", params);
     return message;
+}
+
+JsonValue* make_completion_params(const char* document_uri, unsigned int line, unsigned int character) {
+    JsonValue* params = json_new_object();
+
+    JsonValue* textDocument = json_new_object();
+    json_add_child(textDocument, "uri", json_new_string(document_uri));
+    json_add_child(params, "textDocument", textDocument);
+
+    JsonValue* position = json_new_object();
+    json_add_child(position, "line", json_new_number(line));
+    json_add_child(position, "character", json_new_number(character));
+    json_add_child(params, "position", position);
+
+    json_add_child(params, "workDoneToken", json_new_null());
+
+    JsonValue* context = json_new_object();
+    json_add_child(context, "triggerKind", json_new_number(1));  // invoked
+    json_add_child(context, "triggerCharacter", json_new_null());
+    json_add_child(params, "context", context);
+
+    return params;
+}
+
+JsonValue* make_completion_request(JsonValue* id, JsonValue* params){
+    JsonValue* message = make_base_message();
+    json_add_child(message, "id", id);
+    json_add_child(message, "method", json_new_string("textDocument/completion"));
+    json_add_child(message, "params", params);
+    return message;   
 }
 
 void send_json_rpc_message(int fd, JsonValue *packet) {
@@ -295,6 +325,7 @@ static void start_lsp_server(int *write_fd_out, int *read_fd_out) {
         close(from_server[1]);
 
         execlp("clangd", "clangd", NULL);
+        // execlp("pylsp", "pylsp", NULL);
         perror("execlp failed");
         exit(1);
     }
