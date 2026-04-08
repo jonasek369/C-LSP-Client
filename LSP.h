@@ -58,6 +58,7 @@ typedef enum {
 } LSPKind;
 
 typedef struct {
+    volatile bool running;
     pthread_t sender_thread;
     tiny_queue_t* sender_queue;
     pthread_t reciever_thread;
@@ -267,13 +268,11 @@ static JsonValue* recieve_json_rpc_message(int fd) {
     return response;
 }
 
-static volatile bool running = true;
-
 static void* lsp_sender_thread_function(void *args) {
     int fd = ((LSPContext*)args)->write_read_fds[0];
     tiny_queue_t* queue = ((LSPContext*)args)->sender_queue;
 
-    while (running) {
+    while (((LSPContext*)args)->running) {
         JsonValue *json_to_send = tiny_queue_pop(queue);
         if (!json_to_send) break;
         send_json_rpc_message(fd, json_to_send);
@@ -286,7 +285,7 @@ static void* lsp_reciever_thread_function(void *args) {
     int fd = ((LSPContext*)args)->write_read_fds[1];
     tiny_queue_t* queue = ((LSPContext*)args)->receiver_queue;
 
-    while (running) {
+    while (((LSPContext*)args)->running) {
         JsonValue *response = recieve_json_rpc_message(fd);
         if (!response) break;  // EOF/error — server exited
         if (tiny_queue_push(queue, (void *)response) == -1) {
@@ -352,7 +351,7 @@ static void start_lsp_server(int *write_fd_out, int *read_fd_out, LSPKind kind) 
     if (read_fd_out)  *read_fd_out  = from_server[0];
 }
 
-static void shutdown_lsp_server(tiny_queue_t *sender_queue, tiny_queue_t *receiver_queue) {
+static void shutdown_lsp_server(bool* running, tiny_queue_t *sender_queue, tiny_queue_t *receiver_queue) {
     JsonValue *shutdown_req = make_base_message();
     json_add_child(shutdown_req, "id",      json_new_string("shutdown"));
     json_add_child(shutdown_req, "method",  json_new_string("shutdown"));
@@ -371,11 +370,12 @@ static void shutdown_lsp_server(tiny_queue_t *sender_queue, tiny_queue_t *receiv
     tiny_queue_push(sender_queue, (void *)exit_notif);
 
     tiny_queue_push(sender_queue, NULL);
-    running = false;
+    *running = false;
 }
 
 LSPContext* start_lsp(LSPKind kind){
     LSPContext* ctx = malloc(sizeof(LSPContext));
+    ctx->running = true;
     ctx->write_read_fds = malloc(sizeof(int)*2);
     ctx->write_read_fds[0] = -1;
     ctx->write_read_fds[1] = -1;
@@ -410,7 +410,7 @@ LSPContext* start_lsp(LSPKind kind){
 }
 
 void destroy_lsp(LSPContext* ctx){
-	shutdown_lsp_server(ctx->sender_queue, ctx->receiver_queue);
+	shutdown_lsp_server(&ctx->running, ctx->sender_queue, ctx->receiver_queue);
 
     pthread_join(ctx->sender_thread, NULL);
     pthread_join(ctx->reciever_thread, NULL);
