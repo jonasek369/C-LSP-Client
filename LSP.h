@@ -52,7 +52,7 @@
 #endif
 
 typedef enum {
-    LSPKIND_NONE = 0,
+    LSPKIND_UNKNOWN = 0,
     LSPKIND_CLANGD,
     LSPKIND_PYLSP
 } LSPKind;
@@ -65,7 +65,7 @@ typedef struct {
     JsonValue* capabilities;
 
     int* write_read_fds;
-    LSPKind lsp_kind;
+    LSPKind kind;
 } LSPContext;
 
 
@@ -299,7 +299,23 @@ static void* lsp_reciever_thread_function(void *args) {
     return NULL;
 }
 
-static void start_lsp_server(int *write_fd_out, int *read_fd_out) {
+static void start_lsp_kind(LSPKind kind) {
+    switch (kind) {
+        case LSPKIND_CLANGD:
+            execlp("clangd", "clangd", NULL);
+            break;
+
+        case LSPKIND_PYLSP:
+            execlp("pylsp", "pylsp", NULL);
+            break;
+
+        default:
+            fprintf(stderr, "Error: Unknown %d kind of LSP. Could not start\n", kind);
+            exit(1);
+    }
+}
+
+static void start_lsp_server(int *write_fd_out, int *read_fd_out, LSPKind kind) {
     int to_server[2];
     int from_server[2];
 
@@ -324,8 +340,7 @@ static void start_lsp_server(int *write_fd_out, int *read_fd_out) {
         close(from_server[0]);
         close(from_server[1]);
 
-        execlp("clangd", "clangd", NULL);
-        // execlp("pylsp", "pylsp", NULL);
+        start_lsp_kind(kind);
         perror("execlp failed");
         exit(1);
     }
@@ -359,15 +374,15 @@ static void shutdown_lsp_server(tiny_queue_t *sender_queue, tiny_queue_t *receiv
     running = false;
 }
 
-LSPContext* start_lsp(){
+LSPContext* start_lsp(LSPKind kind){
     LSPContext* ctx = malloc(sizeof(LSPContext));
     ctx->write_read_fds = malloc(sizeof(int)*2);
     ctx->write_read_fds[0] = -1;
     ctx->write_read_fds[1] = -1;
 
     // TODO: Add more lsps
-    start_lsp_server(&(ctx->write_read_fds[0]), &(ctx->write_read_fds[1]));
-    ctx->lsp_kind = LSPKIND_CLANGD;
+    start_lsp_server(&(ctx->write_read_fds[0]), &(ctx->write_read_fds[1]), kind);
+    ctx->kind = kind;
     if(ctx->write_read_fds[0] == -1 || ctx->write_read_fds[1] == -1){
         free(ctx->write_read_fds);
         free(ctx);
