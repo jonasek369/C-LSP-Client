@@ -54,11 +54,14 @@
 typedef enum {
     LSPKIND_UNKNOWN = 0,
     LSPKIND_CLANGD,
-    LSPKIND_PYLSP
+    LSPKIND_PYLSP,
+    LSPKIND_RUST_ANALYZER
 } LSPKind;
 
+static LSPKind* installed_lsps = NULL;
+
 typedef struct {
-    volatile bool running;
+    bool running;
     pthread_t sender_thread;
     tiny_queue_t* sender_queue;
     pthread_t reciever_thread;
@@ -139,6 +142,13 @@ JsonValue* make_initialize_message(double id, const char* str_id, JsonValue* par
     json_add_child(message, "id",     message_id);
     json_add_child(message, "method", json_new_string("initialize"));
     json_add_child(message, "params", params == NULL ? json_new_object() : params);
+    return message;
+}
+
+JsonValue* make_initialized_notification(){
+    JsonValue* message = make_base_message();
+    json_add_child(message, "method", json_new_string("initialized"));
+    json_add_child(message, "params", json_new_object());
     return message;
 }
 
@@ -308,6 +318,10 @@ static void start_lsp_kind(LSPKind kind) {
             execlp("pylsp", "pylsp", NULL);
             break;
 
+        case LSPKIND_RUST_ANALYZER:
+            execlp("rust-analyzer", "rust-analyzer", NULL);
+            break;
+
         default:
             fprintf(stderr, "Error: Unknown %d kind of LSP. Could not start\n", kind);
             exit(1);
@@ -355,7 +369,7 @@ static void shutdown_lsp_server(bool* running, tiny_queue_t *sender_queue, tiny_
     JsonValue *shutdown_req = make_base_message();
     json_add_child(shutdown_req, "id",      json_new_string("shutdown"));
     json_add_child(shutdown_req, "method",  json_new_string("shutdown"));
-    json_add_child(shutdown_req, "params",  json_new_object());
+    json_add_child(shutdown_req, "params",  json_new_null());
     tiny_queue_push(sender_queue, (void *)shutdown_req);
 
     JsonValue *shutdown_resp = lsp_wait_for(receiver_queue, 0, "shutdown");
@@ -373,14 +387,49 @@ static void shutdown_lsp_server(bool* running, tiny_queue_t *sender_queue, tiny_
     *running = false;
 }
 
-LSPContext* start_lsp(LSPKind kind){
+static int command_exists(const char *cmd) {
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "which %s > /dev/null 2>&1", cmd);
+    return system(buffer) == 0;
+}
+
+static void is_lsp_installed(const char* cmd, LSPKind kind){
+    if(command_exists(cmd)){
+        arrput(installed_lsps, kind);
+    }else{
+        printf("Could not find '%s' LSP server!\n", cmd);
+    }
+}
+
+static void get_installed_lsps(){
+    is_lsp_installed("clangd", LSPKIND_CLANGD);
+    is_lsp_installed("pylsp", LSPKIND_PYLSP);
+    is_lsp_installed("rust-analyzer", LSPKIND_RUST_ANALYZER);
+}
+
+bool is_lspkind_installed(LSPKind kind){
+    if(!installed_lsps){
+        get_installed_lsps();
+    }
+    if(!installed_lsps){
+        return false;
+    }
+    for(size_t i = 0; i < arrlenu(installed_lsps); i++){
+        if(installed_lsps[i] == kind) return true;
+    }
+    return false;
+}
+
+LSPContext* start_lsp(LSPKind kind, JsonValue* initialize_params){
+    if(!installed_lsps){
+        get_installed_lsps();
+    }
     LSPContext* ctx = malloc(sizeof(LSPContext));
     ctx->running = true;
     ctx->write_read_fds = malloc(sizeof(int)*2);
     ctx->write_read_fds[0] = -1;
     ctx->write_read_fds[1] = -1;
 
-    // TODO: Add more lsps
     start_lsp_server(&(ctx->write_read_fds[0]), &(ctx->write_read_fds[1]), kind);
     ctx->kind = kind;
     if(ctx->write_read_fds[0] == -1 || ctx->write_read_fds[1] == -1){
@@ -403,8 +452,9 @@ LSPContext* start_lsp(LSPKind kind){
         return NULL;
     }
 
-    tiny_queue_push(ctx->sender_queue, (void*)make_initialize_message(0, "initialize", NULL));
+    tiny_queue_push(ctx->sender_queue, (void*)make_initialize_message(0, "initialize", initialize_params));
     ctx->capabilities = lsp_wait_for(ctx->receiver_queue, 0, "initialize");
+    tiny_queue_push(ctx->sender_queue, (void*)make_initialized_notification());
 
     return ctx;
 }
@@ -442,3 +492,4 @@ void destroy_lsp(LSPContext* ctx){
 }
 
 #endif //_H_LSP
+
