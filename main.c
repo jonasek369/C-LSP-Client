@@ -14,21 +14,32 @@
 
 
 int main(void){
-    LSPContext* ctx = start_lsp();
+    LSPContext *ctx = start_lsp(LSPKIND_CLANGD, NULL);
     Nob_String_Builder sb = {0};
 
     nob_read_entire_file("test.c", &sb);
     nob_sb_append_null(&sb);
     char* escaped = json_escape(sb.items);
+    Nob_String_Builder path_sb = {0};
+    const char* cwd = nob_get_current_dir_temp();
+    nob_sb_append_cstr(&path_sb, "file://");
+    nob_sb_append_cstr(&path_sb, cwd);
+    nob_sb_append_cstr(&path_sb, "/test.c");
 
-    JsonValue* params = make_didOpen_params("file:///home/jonas/programming/LSP-test/test.c", "c", 1, escaped);
+    JsonValue* params = make_didOpen_params(path_sb.items, "c", 1, escaped);
     JsonValue* message = make_didOpen_notification(params);
+    printf("[C-LSP-Client] Sending didOpen notification to LSP:\n");
     json_print(message, 4, 0);
     tiny_queue_push(ctx->sender_queue, message);
     free(escaped);
     NOB_FREE(sb.items);
-
-    sleep(2);
+    NOB_FREE(path_sb.items);
+    printf("[C-LSP-Client] Waiting for response from LSP:\n");
+    void* item = tiny_queue_pop(ctx->receiver_queue);
+    if(item){
+        printf("[C-LSP-Client] Response from LSP:\n");
+        json_print((JsonValue*)item, 4, 0);
+    }
     destroy_lsp(ctx);
     wait(NULL);
 }

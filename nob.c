@@ -11,7 +11,6 @@ int main(int argc, char **argv)
     nob_cmd_append(&cmd,
     "gcc",
     "-std=gnu11",
-    "-D_POSIX_C_SOURCE=200809L",
     "-g",
     "-o", "main",
     "main.c",
