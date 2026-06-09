@@ -118,7 +118,7 @@ JsonValue *lsp_wait_for(tiny_queue_t *queue, int id, const char *str_id) {
 
         JsonValue *response_id = shget(response->object, "id");
         if (response_id && response_id->type == JSON_NUMBER && str_id == NULL &&
-                (int)(response_id->number) == id)
+                (json_get_integer(response_id)) == id)
             return response;
         if (response_id && response_id->type == JSON_STRING && str_id != NULL &&
                 strncmp(response_id->string, str_id, strlen(response_id->string)) == 0)
