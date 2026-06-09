@@ -230,7 +230,7 @@ JsonValue *make_completion_request(JsonValue *id, JsonValue *params) {
 
 void send_json_rpc_message(lsp_pipe_fd_t fd, JsonValue *packet) {
     char *out = NULL;
-    json_dump(packet, &out);
+    json_dump(packet, &out, 0, 0);
     arrput(out, '\0');
 
     int   len    = (int)strlen(out);
