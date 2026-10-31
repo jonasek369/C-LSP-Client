@@ -14,7 +14,9 @@
 
 
 int main(void){
-    LSPContext *ctx = start_lsp(LSPKIND_CLANGD, NULL);
+    LSPID clangd = register_lsp("clangd", "clangd");
+
+    LSPContext *ctx = start_lsp(clangd, NULL);
     Nob_String_Builder sb = {0};
 
     nob_read_entire_file("test.c", &sb);
@@ -41,5 +43,6 @@ int main(void){
         json_print((JsonValue*)item, 4, 0);
     }
     destroy_lsp(ctx);
+    destroy_registered_lsps();
     wait(NULL);
 }

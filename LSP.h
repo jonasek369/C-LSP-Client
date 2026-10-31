@@ -60,14 +60,75 @@
 #endif
 
 /* ── Public types ────────────────────────────────────────────────────────── */
-typedef enum {
-    LSPKIND_UNKNOWN = 0,
-    LSPKIND_CLANGD,
-    LSPKIND_PYLSP,
-    LSPKIND_RUST_ANALYZER
-} LSPKind;
+typedef struct {
+    char* name;
+    char* cmd;
+} RegisteredLSP;
 
-static LSPKind *installed_lsps = NULL;
+typedef struct {
+    char* key;
+    RegisteredLSP* value;
+} LSPIDTable;
+
+typedef int32_t LSPID;
+
+static LSPIDTable* lsp_id_table = NULL;
+static int32_t lsp_id_iota = 0;
+
+
+static int lsp_command_exists(const char *cmd) {
+#ifdef _WIN32
+    /* Use 'where' on Windows instead of 'which' */
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "where \"%s\" > NUL 2>&1", cmd);
+#else
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "which %s > /dev/null 2>&1", cmd);
+#endif
+    return system(buffer) == 0;
+}
+
+
+LSPID register_lsp(const char* name, const char* cmd){
+    if(lsp_id_table){
+        for(size_t i = 0; i < shlen(lsp_id_table); i++){
+            LSPIDTable entry = lsp_id_table[i];
+            if(strncmp(name, entry.key, strlen(name)) == 0){
+                // LSP With that name already exists
+                return -1;
+            }
+        }
+    }
+    if(!lsp_command_exists(cmd)){
+        // LSP is not installed
+        return -1;
+    }
+    RegisteredLSP* reg = malloc(sizeof(RegisteredLSP));
+    if(!reg){
+        return -1;
+    }
+    reg->name = strdup(name);
+    reg->cmd = strdup(cmd);
+    shput(lsp_id_table, reg->name, reg);
+    return lsp_id_iota++;
+}
+
+
+void destroy_registered_lsps(){
+    for(size_t i = 0; i < shlen(lsp_id_table); i++){
+        LSPIDTable entry = lsp_id_table[i];
+        if(entry.value){
+            if(entry.value->name){
+                free(entry.value->name);
+            }
+            if(entry.value->cmd){
+                free(entry.value->cmd);
+            }
+        }
+    }
+    shfree(lsp_id_table);
+    lsp_id_table = NULL;
+}
 
 typedef struct {
     bool           running;
@@ -79,7 +140,7 @@ typedef struct {
 
     lsp_pipe_fd_t  write_fd;   /* parent → server  */
     lsp_pipe_fd_t  read_fd;    /* server → parent  */
-    LSPKind        kind;
+    LSPID        kind;
 } LSPContext;
 
 /* ── Timeout (µs on POSIX, rounded up to ms on Windows) ─────────────────── */
@@ -351,26 +412,6 @@ static void lsp_thread_join(lsp_thread_t t) {
 
 /* ── Process spawning ────────────────────────────────────────────────────── */
 
-static const char *lsp_kind_command(LSPKind kind) {
-    switch (kind) {
-        case LSPKIND_CLANGD:        return "clangd";
-        case LSPKIND_PYLSP:         return "pylsp";
-        case LSPKIND_RUST_ANALYZER: return "rust-analyzer";
-        default:                    return NULL;
-    }
-}
-
-static int lsp_command_exists(const char *cmd) {
-#ifdef _WIN32
-    /* Use 'where' on Windows instead of 'which' */
-    char buffer[256];
-    snprintf(buffer, sizeof(buffer), "where \"%s\" > NUL 2>&1", cmd);
-#else
-    char buffer[256];
-    snprintf(buffer, sizeof(buffer), "which %s > /dev/null 2>&1", cmd);
-#endif
-    return system(buffer) == 0;
-}
 
 /*
  * Spawns the LSP server process with its stdin/stdout connected to a pair of
@@ -380,10 +421,12 @@ static int lsp_command_exists(const char *cmd) {
  */
 static int lsp_start_server(lsp_pipe_fd_t *write_fd_out,
                              lsp_pipe_fd_t *read_fd_out,
-                             LSPKind kind) {
-    const char *cmd = lsp_kind_command(kind);
+                             LSPID lspid) {
+    RegisteredLSP* lsp = lsp_id_table[lspid].value;
+
+    const char *cmd = lsp->cmd;
     if (!cmd) {
-        fprintf(stderr, "Error: Unknown LSP kind %d\n", kind);
+        fprintf(stderr, "Error: Unknown LSP %s\n", lsp->name);
         return -1;
     }
 
@@ -481,26 +524,6 @@ static int lsp_start_server(lsp_pipe_fd_t *write_fd_out,
 
 /* ── LSP lifecycle ───────────────────────────────────────────────────────── */
 
-static void is_lsp_installed(const char *cmd, LSPKind kind) {
-    if (lsp_command_exists(cmd))
-        arrput(installed_lsps, kind);
-    else
-        printf("Could not find '%s' LSP server!\n", cmd);
-}
-
-static void get_installed_lsps(void) {
-    is_lsp_installed("clangd",        LSPKIND_CLANGD);
-    is_lsp_installed("pylsp",         LSPKIND_PYLSP);
-    is_lsp_installed("rust-analyzer", LSPKIND_RUST_ANALYZER);
-}
-
-bool is_lspkind_installed(LSPKind kind) {
-    if (!installed_lsps) get_installed_lsps();
-    if (!installed_lsps) return false;
-    for (size_t i = 0; i < arrlenu(installed_lsps); i++)
-        if (installed_lsps[i] == kind) return true;
-    return false;
-}
 
 static void shutdown_lsp_server(bool *running,
                                 tiny_queue_t *sender_queue,
@@ -539,9 +562,7 @@ static void shutdown_lsp_server(bool *running,
  *   destroy_lsp(ctx);
  *   // On POSIX, call wait(NULL) afterwards to reap the child.
  */
-LSPContext *start_lsp(LSPKind kind, JsonValue *initialize_params) {
-    if (!installed_lsps) get_installed_lsps();
-
+LSPContext *start_lsp(LSPID lspid, JsonValue *initialize_params) {
     LSPContext *ctx = (LSPContext *)malloc(sizeof(LSPContext));
     if (!ctx) return NULL;
 
@@ -550,11 +571,11 @@ LSPContext *start_lsp(LSPKind kind, JsonValue *initialize_params) {
     ctx->read_fd    = LSP_INVALID_FD;
     ctx->capabilities = NULL;
 
-    if (lsp_start_server(&ctx->write_fd, &ctx->read_fd, kind) != 0) {
+    if (lsp_start_server(&ctx->write_fd, &ctx->read_fd, lspid) != 0) {
         free(ctx);
         return NULL;
     }
-    ctx->kind = kind;
+    ctx->kind = lspid;
 
     ctx->sender_queue   = tiny_queue_create();
     ctx->receiver_queue = tiny_queue_create();
