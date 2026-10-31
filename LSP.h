@@ -88,6 +88,19 @@ static int lsp_command_exists(const char *cmd) {
     return system(buffer) == 0;
 }
 
+void clear_lsp_registry(){
+    lsp_id_iota = 1;
+    if(lsp_id_table){
+        for(size_t i = 0; i < shlen(lsp_id_table); i++){
+            LSPIDTable entry = lsp_id_table[i];
+            free(entry.value->name);
+            free(entry.value->cmd);
+            free(entry.value);
+        }
+        shfree(lsp_id_table);
+        lsp_id_table = NULL;
+    }
+}
 
 LSPID register_lsp(const char* name, const char* cmd){
     if(lsp_id_table){
