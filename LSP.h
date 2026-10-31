@@ -73,7 +73,7 @@ typedef struct {
 typedef int32_t LSPID;
 
 static LSPIDTable* lsp_id_table = NULL;
-static int32_t lsp_id_iota = 0;
+static int32_t lsp_id_iota = 1;
 
 
 static int lsp_command_exists(const char *cmd) {
