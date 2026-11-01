@@ -435,7 +435,7 @@ static void lsp_thread_join(lsp_thread_t t) {
 static int lsp_start_server(lsp_pipe_fd_t *write_fd_out,
                              lsp_pipe_fd_t *read_fd_out,
                              LSPID lspid) {
-    RegisteredLSP* lsp = lsp_id_table[lspid].value;
+    RegisteredLSP* lsp = lsp_id_table[lspid-1].value;
 
     const char *cmd = lsp->cmd;
     if (!cmd) {
