@@ -300,6 +300,30 @@ JsonValue *make_completion_request(JsonValue *id, JsonValue *params) {
     return msg;
 }
 
+JsonValue* make_definition_params(const char *document_uri,
+                                  unsigned int line, unsigned int character) {
+    JsonValue *params       = json_new_object();
+    JsonValue *textDocument = json_new_object();
+    JsonValue *position     = json_new_object();
+
+    json_add_child(textDocument, "uri", json_new_string(document_uri));
+    json_add_child(params, "textDocument", textDocument);
+
+    json_add_child(position, "line",      json_new_integer(line));
+    json_add_child(position, "character", json_new_integer(character));
+    json_add_child(params, "position", position);
+
+    return params;
+}
+
+JsonValue *make_definition_request(JsonValue *id, JsonValue *params) {
+    JsonValue *msg = make_base_message();
+    json_add_child(msg, "id",     id);
+    json_add_child(msg, "method", json_new_string("textDocument/definition"));
+    json_add_child(msg, "params", params);
+    return msg;
+}
+
 /* ── Wire-level I/O ──────────────────────────────────────────────────────── */
 
 void send_json_rpc_message(lsp_pipe_fd_t fd, JsonValue *packet) {
