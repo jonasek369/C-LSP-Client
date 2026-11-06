@@ -137,6 +137,9 @@ void destroy_registered_lsps(){
             if(entry.value->cmd){
                 free(entry.value->cmd);
             }
+            if(entry.value){
+                free(entry.value);
+            }
         }
     }
     shfree(lsp_id_table);
